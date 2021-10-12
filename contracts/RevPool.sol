@@ -1,52 +1,109 @@
-pragma solidity 0.8.7; //"SPDX-License-Identifier: UNLICENSED"
+//SPDX-License-Identifier: Unlicense
+pragma solidity 0.8.7;
+pragma experimental ABIEncoderV2;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@uniswap/lib/contracts/libraries/TransferHelper.sol";
 
 import "./MasterPool.sol";
 import "./LuckyToken.sol";
-import "./libs/IPancakeRouter02.sol";
+import "./interfaces/IPancakeFactory.sol";
+import "./interfaces/IPancakeRouter02.sol";
+import "./interfaces/IWETH.sol";
 
 
-contract RevPool is ERC20('RevPool', 'RevPool'), Ownable {
+contract RevPool is Ownable {
     using SafeERC20 for IERC20;
-
-    struct SlotInfo {
-                uint256 priorLucky;
-                uint256 priorBalance;
-                uint256 totalLucky;
-                uint256 swappedAmount;
-                }
-    SlotInfo private slotInfo;
+    
     // The Lucky Token!
     LuckyToken public lucky;
-    
     MasterPool public masterPool;
+    IERC20 public BUSD;
+    IWETH public wNative;
+    IPancakeRouter02 public exchangeRouter;
+    uint256 MAX;
+    uint256 public totalLuckyRevenue;
     
-    IPancakeRouter02 public swapRouter;
+    struct InputToken {
+        address token;
+        uint256 amount;
+        address[] tokenToBUSDPath;
+    }
+    
+    event DistributeLuckyRevenue(address from, address to, uint256 amounts);
 
-    IERC20 public busd;
-    uint16 public slippageFactor;
- 
-    //uint256 public swapDeadlineInterval;
-    constructor(
+    constructor (
         address owner_,
         MasterPool _masterPool,
         LuckyToken _lucky,
-        //IERC20 _busd,
-        IPancakeRouter02 _swapRouter
-    ) {
+        IPancakeRouter02 _exchangeRouter,
+        address _busd,
+        address _wNative
+    ) payable {
         masterPool = _masterPool;
-        transferOwnership(owner_);
         lucky = _lucky;
-        //busd = _busd;
-        swapRouter = _swapRouter;
-        slippageFactor = 1015;
+        exchangeRouter = IPancakeRouter02(_exchangeRouter);
+        wNative = IWETH(_wNative);
+        BUSD = IERC20(_busd);
+        MAX = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+        transferOwnership(owner_);
     }
 
+    receive() external payable {}
+
+    function shareRevenue(
+        InputToken[] calldata inputTokens,
+        address[] calldata BUSDToOutputPath,
+        uint256 minOutputAmount
+    ) external payable {
+        
+        uint256 luckyRevenue;
+        
+        address[] memory _path = new address[](2);
+            _path[0] = address(wNative);
+            _path[1] = address(BUSD);
+        if (msg.value > 0) {
+            wNative.deposit{value: msg.value}();
+            uint256 wNativeBalance = wNative.balanceOf(address(this));
+            _swapExactNativeForBUSD(wNativeBalance, _path);
+        }
+        
+        if (inputTokens.length > 0 ) {
+            for (uint256 i; i < inputTokens.length; i++) {
+                if (inputTokens[i].token == address(lucky)) { //transfer LUCKY to Cave
+                    IERC20(lucky).safeTransferFrom(msg.sender, address(this), inputTokens[i].amount);
+                    totalLuckyRevenue += inputTokens[i].amount;
+                    luckyRevenue += inputTokens[i].amount;
+                } else if (inputTokens[i].token == address(BUSD)) { //transfer BUSD to Cave
+                    IERC20(BUSD).safeTransferFrom(msg.sender, address(this), inputTokens[i].amount);
+                } else {  //Swap Tokens for BUSD
+                    _transferTokensToCave(inputTokens[i]);
+                    _swapTokensForBUSD(inputTokens[i]);
+                }
+            }
+        }
+        
+        uint256 BUSDBalance = BUSD.balanceOf(address(this));
+        uint256 amountOut = _swapBUSDForToken( //Swap BUSD for LUCKY
+            BUSDBalance,
+            BUSDToOutputPath
+        );
+        
+        require(
+            amountOut >= minOutputAmount,
+            "Expect amountOut to be greater than minOutputAmount."
+        );
+        
+        totalLuckyRevenue += amountOut;
+        luckyRevenue += amountOut;
+        
+        emit DistributeLuckyRevenue(msg.sender, address(this), luckyRevenue);
+    }
+    
     // Safe reward transfer function for user to withdraw their reward from this contract.
-    function safeRewardTransfer(address _to, uint256 _amount) external onlyOwner {
+    function claimReward(address _to, uint256 _amount) external {
         //uint256 rewardBal = masterPool.balanceOf(address(this));
         // if (_amount > luckyBal) {
         //     lucky.transfer(_to, luckyBal);
@@ -55,141 +112,57 @@ contract RevPool is ERC20('RevPool', 'RevPool'), Ownable {
         // }
         lucky.transfer(_to, _amount); // need to checking balance logic.
     }
-
-    function depositRewardAndSwap
-        (address[] calldata tokens,
-        uint256[] calldata amounts,
-        address[] calldata path0,
-        address[] calldata path1,
-        uint256 swapDeadlineInterval) public onlyOwner{
-            require(tokens.length == amounts.length,
-            "revPool.sol:depositRewardAndSwap: tokens length must be equal amounts length"
+    
+    function _transferTokensToCave(InputToken calldata inputTokens) private {
+            IERC20(inputTokens.token).safeTransferFrom(
+                msg.sender,
+                address(this),
+                inputTokens.amount
             );
-            //conditions
-            //1.amount of path array = tokens.length
-            //2.final index of path has to be lucky
-            //3.path length must be equl or more than 2.
-            // uint8 countTokens;
-            // bool countLucky;
-            // if (tokens[0] ==address(lucky)){
-            //     require(path0[0]=address(lucky),"revPool.sol:depositRewardAndSwap, must be sole Lucky");
-            //     countLucky +=1;
-            //     countLucky =true
-            // }
-            // else if (path0.length >= 2) { 
-            //     countTokens += 1;
-            //     require(path0[path0.length - 1]=address(lucky),"revPool.sol:depositRewardAndSwap, the last token in path must be Lucky");
-            // }
-            // if (path1.length ==1){
-            //     require(path1[0]=address(lucky),"revPool.sol:depositRewardAndSwap, must be sole Lucky");
-            //     countLucky += 1;
-            // }
-            // else if (path1.length >= 2) {
-            //     countTokens += 1;
-            //     require(path1[path1.length - 1]=address(lucky),"revPool.sol:depositRewardAndSwap, the last token in path must be Lucky");
-            // }
-            // if (path2.length ==1){
-            //     require(path2[0]=address(lucky),"revPool.sol:depositRewardAndSwap, must be sole Lucky");
-            //     countLucky += 1;
-            // }
-            // else if (path2.length >= 2) {
-            //     countTokens += 1;
-            //     require(path2[path2.length - 1]=address(lucky),"revPool.sol:depositRewardAndSwap, the last token in path must be Lucky");
-            // }
-            // require(countTokens=(tokens.length-countLucky),"RevPool.sol:depositRewardAndSwap: must specify all paths for all tokens");
-            
-            //uint256 totalLucky = 0;
-            
-            slotInfo.priorLucky = lucky.balanceOf(address(this));
-
-            for (uint8 i = 0; i < tokens.length; i++) {
-                require(amounts[i] > 0, "RevPool.sol:depositRewardAndSwap:: need amount > 0");
-                if (tokens[i] != address(lucky) /*&& tokens[i] != address(busd)*/) {
-                    if (path0[0]==tokens[i]){
-                        require( path1[0]!=tokens[i] && path0[path0.length-1]==address(lucky),"RevPool.sol:depositRewardAndSwap:: beginning and the end of the path must be correct");
-                        //swap usdt to busd then busd to lucky
-                        slotInfo.priorBalance = lucky.balanceOf(msg.sender);
-                        IERC20(tokens[i]).safeApprove(address(swapRouter),amounts[i]);
-                        _safeSwap(
-                                address(swapRouter),
-                                amounts[i],
-                                slippageFactor,
-                                path0,
-                                msg.sender,
-                                block.timestamp + swapDeadlineInterval
-                            );
-                        slotInfo.swappedAmount = lucky.balanceOf(msg.sender) -slotInfo.priorBalance;
-                        IERC20(tokens[i]).safeTransferFrom(msg.sender,address(this),slotInfo.swappedAmount);
-                        delete slotInfo;
-                    }
-                    else{
-                        require( path0[0]!=tokens[i] && path1[path1.length-1]==address(lucky),"RevPool.sol:depositRewardAndSwap:: beginning and the end of the path must be correct");
-                        //swap usdt to busd then busd to lucky
-                        slotInfo.priorBalance = lucky.balanceOf(msg.sender);
-                        IERC20(tokens[i]).safeApprove(address(swapRouter),amounts[i]);
-                        _safeSwap(
-                                address(swapRouter),
-                                amounts[i],
-                                slippageFactor,
-                                path1,
-                                msg.sender,
-                                block.timestamp + swapDeadlineInterval
-                            );
-                        slotInfo.swappedAmount = lucky.balanceOf(msg.sender) -slotInfo.priorBalance;
-                        IERC20(tokens[i]).safeTransferFrom(msg.sender,address(this),slotInfo.swappedAmount);
-                        delete slotInfo;
-                    }
-                }
-                else {
-                    IERC20(tokens[i]).safeTransferFrom(msg.sender,address(this),amounts[i]);
-                }
-                
-                slotInfo.totalLucky = lucky.balanceOf(address(this)) - slotInfo.priorLucky;
-                //.... some code here.
-                
-                delete slotInfo;
-                    
-                    // uint256 luckyFromSwapped = _swapToLucky(tokens[i], amounts[i]);
-                    // totalLucky = totalLucky.add(luckyFromSwapped);
-                // } else {
-                //     totalLucky = totalLucky.add(amounts[i]);
-                // }
-            }
-
-            // require(totalLucky > 0, "shareRevenue: no lucky");
+    }
     
+    function _swapExactNativeForBUSD(uint256 amount, address[] memory path) private returns (uint256){
+        if (amount == 0 || path[path.length - 1] == address(wNative)) {
+            return amount;
         }
+        wNative.approve(address(exchangeRouter), MAX);
+        exchangeRouter.swapExactTokensForTokens(
+            amount,
+            0,//minimum amount out can optimize by cal slippage
+            path,
+            address(this),
+            block.timestamp + 60
+        );
+    }
     
-    function _swapToLucky(address token, uint256 amount)
-        internal
-        returns (uint256)
-    {
-        // luckyFromSwapped = Call Pancakeswap router
-        // return luckyFromSwapped
+    function _swapTokensForBUSD(InputToken calldata inputTokens) private {
+        if (inputTokens.token != address(BUSD)) {
+            IERC20(inputTokens.token).approve(address(exchangeRouter), MAX);
+            exchangeRouter.swapExactTokensForTokens(
+                inputTokens.amount,
+                0, //minimum amount out can optimize by cal slippage
+                inputTokens.tokenToBUSDPath,
+                address(this),
+                block.timestamp + 60
+            );
+        }
     }
 
-    
-    function _safeSwap(
-        address _RouterAddress,
-        uint256 _amountIn,
-        uint256 _slippageFactor,
-        address[] memory _path,
-        address _to,
-        uint256 _deadline
-    ) internal virtual {
-        uint256[] memory amounts =
-            IPancakeRouter02(_RouterAddress).getAmountsOut(_amountIn, _path);
-        uint256 amountOut = amounts[amounts.length - 1];
-
-        IPancakeRouter02(_RouterAddress)
-            .swapExactTokensForTokens(
-            _amountIn,
-            amountOut *_slippageFactor /1000, //slippage factor has 1 decimal. like 1.5% >>_slippageFactor =1015 
-            _path,
-            _to,
-            _deadline
+    function _swapBUSDForToken(uint256 amount, address[] memory path)
+        private
+        returns (uint256)
+    {
+        if (amount == 0 || path[path.length - 1] == address(BUSD)) {
+            return amount;
+        }
+        BUSD.approve(address(exchangeRouter), MAX);
+        uint256[] memory amountOuts = exchangeRouter.swapExactTokensForTokens(
+            amount,
+            0,//minimum amount out can optimize by cal slippage
+            path,
+            address(this),
+            block.timestamp + 60
         );
-
-        
+        return amountOuts[amountOuts.length - 1];
     }
 }
