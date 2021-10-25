@@ -127,6 +127,18 @@ contract RevenueSharingPool is Ownable {
         emit WithdrawStake(msg.sender, amount, block.timestamp);
     }
     
+    // emergency withdraw LUCKY-BUSD LP token without calculated pending reward (just withdraw LP)
+    function emergencyWithdraw() external {
+        UserInfo storage user = userInfo[msg.sender];
+        uint256 roundId = getCurrentRoundId();
+        uint256 amount = user.amount;
+        user.amount = 0;
+        user.lastUpdateRoundId = roundId;
+        removeStake(roundId);
+        luckyBusd.safeTransfer(msg.sender, amount);
+        emit WithdrawStake(msg.sender, amount, block.timestamp);
+    }
+    
     // claim LUCKY reward
     function claimReward() external {
         UserInfo storage user = userInfo[msg.sender];
