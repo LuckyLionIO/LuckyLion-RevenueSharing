@@ -12,14 +12,14 @@ import "./interfaces/IWBNB.sol";
 import './tokens/LuckyToken.sol';
 
 contract RevenueSharingPool is Ownable {
-    // Utility Libraries 
+    // Utility Libraries  
     using SafeERC20 for IERC20;
     using Counters for Counters.Counter;
     Counters.Counter private _roundId;
 
     // swap token related variables
-    IPancakePair public luckyBusd;
-    LuckyToken public lucky;
+    IERC20 public luckyBusd;
+    IERC20 public lucky;
     IERC20 public BUSD;
     IWBNB public wNative;
     IPancakeRouter02 public exchangeRouter;
@@ -27,12 +27,14 @@ contract RevenueSharingPool is Ownable {
     // contract global variables
     uint256 MAX_NUMBER;
     uint256 public START_ROUND_DATE;
-    uint256 MAX_DATE = 7; // changable
+    uint256 public MAX_DATE = 7;
     
     // staking related variables
     mapping(uint256 => mapping(uint256 => uint256)) public totalStake;
     mapping(uint256 => uint256) public totalLuckyRevenue;
     mapping(uint256 => mapping(uint256 => mapping(address => uint256))) stakeAmount;
+    
+    mapping(address => bool) public whitelists;
     
     // user info variables
     struct UserInfo {
@@ -43,6 +45,16 @@ contract RevenueSharingPool is Ownable {
     }
     
     mapping(address => UserInfo) public userInfo;
+    
+    // pool info
+    struct PoolInfo {
+	    uint256 winRate;
+	    uint256 TPV;
+	    uint256 buyBack;
+	    uint256 TVL;
+    }
+    
+    mapping(uint256 => PoolInfo) public poolInfo; //
 
     event DepositStake(address indexed account, uint256 amount, uint256 timestamp);
     event WithdrawStake(address indexed account, uint256 amount, uint256 timestamp);
@@ -54,18 +66,23 @@ contract RevenueSharingPool is Ownable {
         uint256 amount;
         address[] tokenToBUSDPath;
     }
+    
+    modifier isWhitelisted(address addr) {
+        require(whitelists[addr], "Permission Denied");
+        _;
+    }
 
     constructor (
         address _lucky,
-        address _luckyBusd, 
+        address _luckyBusd,
         address owner_,
         IPancakeRouter02 _exchangeRouter,
         address _busd,
         address _wNative
     ) public {
         exchangeRouter = IPancakeRouter02(_exchangeRouter);
-        luckyBusd = IPancakePair(_luckyBusd);
-        lucky = LuckyToken(_lucky);
+        luckyBusd = IERC20(_luckyBusd);
+        lucky = IERC20(_lucky);
         wNative = IWBNB(_wNative);
         BUSD = IERC20(_busd);
         MAX_NUMBER = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
@@ -82,7 +99,7 @@ contract RevenueSharingPool is Ownable {
     function depositToken(uint256 amount) external {
         UserInfo storage user = userInfo[msg.sender];
         require(amount > 0, "Insufficient deposit amount!");
-        luckyBusd.transferFrom(msg.sender, address(this), amount); // should change to safeTransferFrom
+        luckyBusd.safeTransferFrom(msg.sender, address(this), amount);
         uint256 depositDate = getDepositDate();
         uint256 roundId = getCurrentRoundId();
         
@@ -108,7 +125,7 @@ contract RevenueSharingPool is Ownable {
         uint256 amount = user.amount;
         user.amount = 0;
         removeStake(roundId);
-        luckyBusd.transfer(msg.sender, amount); // should change to safeTransfer
+        luckyBusd.safeTransfer(msg.sender, amount);
         emit WithdrawStake(msg.sender, amount, block.timestamp);
     }
     
@@ -128,7 +145,7 @@ contract RevenueSharingPool is Ownable {
         require(claimableLuckyReward > 0, "Not enough claimable LUCKY reward!");
         user.rewardDept += claimableLuckyReward;
         user.pendingReward -= claimableLuckyReward;
-        lucky.transfer(msg.sender, claimableLuckyReward); // should change to safeTransfer
+        lucky.safeTransfer(msg.sender, claimableLuckyReward);
         emit ClaimReward(msg.sender, claimableLuckyReward, block.timestamp);
     }
     
@@ -138,6 +155,28 @@ contract RevenueSharingPool is Ownable {
         _roundId.increment(); // increase round id when owner deposit revenue share to the contract
     }
     
+    // Update max number of day in a round (default 7 days)
+    function updateMaxDate(uint256 newMaxDate) external onlyOwner {
+        MAX_DATE = newMaxDate;
+    }
+    
+    function addWhitelist(address addr) external onlyOwner {
+        whitelists[addr] = true;
+    }
+
+    function removeWhitelist(address addr) external onlyOwner {
+        whitelists[addr] = false;
+    }
+    
+    function updatePoolInfo(uint256 winRate, uint256 TPV, uint256 buyBack, uint256 roundID) internal {
+	    uint256 totalValueLock = luckyBusd.balanceOf(address(this));
+	    PoolInfo storage _poolInfo = poolInfo[roundID];
+	    _poolInfo.winRate = winRate;
+	    _poolInfo.TPV = TPV;
+            _poolInfo.buyBack = buyBack;
+	    _poolInfo.TVL = totalValueLock;
+    }
+
     function removeStake(uint256 roundId) internal {
         for (uint256 i = 1; i <= MAX_DATE; i++) {
             uint256 amount = stakeAmount[roundId][i][msg.sender];
@@ -153,7 +192,7 @@ contract RevenueSharingPool is Ownable {
         }
     }
     
-    // Update pending stake of msg.sender from last update round to current round
+    // Update pending stake of msg.sender from last update round to current round (MasterPool)
     function updatePendingStake() internal {
         UserInfo storage user = userInfo[msg.sender];
         uint256 lastUpdateRoundId = user.lastUpdateRoundId;
@@ -182,26 +221,34 @@ contract RevenueSharingPool is Ownable {
         user.pendingReward = (luckyReward - luckyRewardDept);
     }
     
+    function calculateLuckyReward(address account, uint256 roundId) internal view returns (uint256) {
+        uint256 luckyReward;
+        uint256 totalLuckyRevenuePerDay = getTotalLuckyRewardPerDay(roundId);
+        if (totalLuckyRevenuePerDay == 0) {
+            return 0;
+        }
+        for (uint256 i = 1; i <= MAX_DATE; i++) {
+            uint256 amount = stakeAmount[roundId][i][account];
+            if (amount == 0) continue;
+            uint256 _totalStake = totalStake[roundId][i];
+            uint256 userSharesPerDay = (amount * 1e18) / _totalStake;
+            luckyReward += (totalLuckyRevenuePerDay * userSharesPerDay) / 1e18;
+        }
+        return luckyReward;
+    }
+    
     function calculateTotalLuckyReward() internal view returns (uint256) {
-        uint256 _totalLuckyReward = 0;
+        uint256 totalLuckyReward = 0;
         uint256 roundId = getCurrentRoundId();
         for (uint256 i = 0; i < roundId; i++) { 
-            uint256 totalLuckyRevenuePerDay = getTotalLuckyRewardPerDay(i);
-            if (totalLuckyRevenuePerDay == 0) continue;
-            for (uint256 j = 1; j <= MAX_DATE; j++) {
-                uint256 amount = stakeAmount[i][j][msg.sender];
-                if (amount == 0) continue;
-                uint256 _totalStake = totalStake[i][j];
-                uint256 userSharesPerDay = (amount * 1e18) / _totalStake;
-                _totalLuckyReward += (totalLuckyRevenuePerDay * userSharesPerDay) / 1e18;
-            }
+            totalLuckyReward += calculateLuckyReward(msg.sender, i);
         }
-        return _totalLuckyReward;
+        return totalLuckyReward;
     }
     
     //-------------------------Getter Functions -------------------------//
     
-    // return current round id 
+    // return current round id
     function getCurrentRoundId() public view returns (uint256) {
         return _roundId.current();
     }
@@ -210,7 +257,7 @@ contract RevenueSharingPool is Ownable {
     function getStakeAmount(uint256 roundId, uint256 day) public view returns (uint256) {
         return stakeAmount[roundId][day][msg.sender];
     }
-    
+     
     // Get past time (in seconds) since start round
     function getRoundPastTime() external view returns (uint256) {
         return (block.timestamp - START_ROUND_DATE);
@@ -219,7 +266,7 @@ contract RevenueSharingPool is Ownable {
     // check deposit date of msg.sender (date range: 1 - MAX_DATE)
     function getDepositDate() internal view returns (uint256) {
         for (uint256 i = 1; i <= MAX_DATE; i++) { 
-            if (block.timestamp >= START_ROUND_DATE && block.timestamp < START_ROUND_DATE + (i * 5 minutes)) { // must be change from minutes to days 
+            if (block.timestamp >= START_ROUND_DATE && block.timestamp < START_ROUND_DATE + (i * 1 days)) { 
                 return i;
             }
         }
@@ -251,7 +298,13 @@ contract RevenueSharingPool is Ownable {
         return (luckyReward - luckyRewardDept);
     }
     
-    // checking whether user reward is up-to-date or not 
+    // (RevPool)
+    function getLuckyRewardPerRound(uint256 roundId) external view returns (uint256){
+	    uint256 luckyReward = calculateLuckyReward(msg.sender, roundId);
+	    return luckyReward;
+    }
+    
+    // checking whether user reward is up-to-date or not
     function isStakeUpToDate(uint256 currentRoundId) internal view returns (bool) {
         return (userInfo[msg.sender].lastUpdateRoundId == currentRoundId);
     }
@@ -262,8 +315,10 @@ contract RevenueSharingPool is Ownable {
     function depositRevenue(
         InputToken[] calldata inputTokens,
         address[] calldata BUSDToOutputPath,
-        uint256 minOutputAmount
-    ) external payable { // must be onlyOwner function (Only whitelites address)
+        uint256 minOutputAmount,
+        uint256 winRate,
+        uint256 TPV
+    ) external payable isWhitelisted(msg.sender) {
         uint256 luckyRevenue;
         uint256 roundId = getCurrentRoundId();
         
@@ -305,6 +360,7 @@ contract RevenueSharingPool is Ownable {
             "Expect amountOut to be greater than minOutputAmount."
         );
         
+        updatePoolInfo(winRate, TPV, BUSDBalance, roundId); // update round pool info
         totalLuckyRevenue[roundId] += amountOut;
         luckyRevenue += amountOut;
         START_ROUND_DATE = block.timestamp;
