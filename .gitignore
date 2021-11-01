@@ -4,9 +4,10 @@ node_modules
 #Hardhat files
 cache
 artifacts
+build
 
 #secrets
 mnemonic*
 mnemonic
-privkey*
 privkey
+privkey*
