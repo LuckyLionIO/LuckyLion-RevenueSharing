@@ -409,7 +409,7 @@ contract RevenueSharingPool is Ownable {
         uint256 amountIn,
         uint256 percentOfSlippage,
         address[] memory path
-    ) public view returns (uint256) {
+    ) internal view returns (uint256) {
         uint256[] memory amounts = exchangeRouter.getAmountsOut(amountIn, path);
         uint256 amountOut = amounts[amounts.length - 1]; //amounts[0] = amountIn
         uint256 minAmountOut = (amountOut * (1000 - percentOfSlippage)) / 1000;
