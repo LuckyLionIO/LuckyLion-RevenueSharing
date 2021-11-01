@@ -1,1 +1,13 @@
-# waffle-basic-erc20
+# Revenue Sharing Pool
+
+## Install Dependencies
+
+`yarn`
+
+## Compile Contracts
+
+`yarn compile`
+
+## Run Tests
+
+`yarn test`
