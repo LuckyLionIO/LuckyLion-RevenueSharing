@@ -1,11 +1,9 @@
-const {use, expect, util} = require('chai');
-const {ContractFactory, utils, constants, BigNumber, ethers} = require('ethers');
+const {use, expect} = require('chai');
+const {ContractFactory, utils, constants } = require('ethers');
 const {waffleChai} = require('@ethereum-waffle/chai');
-const {deployContract, deployMockContract, MockProvider} = require('ethereum-waffle');
+const {deployContract, MockProvider} = require('ethereum-waffle');
 
-const RevenueSharingPool = require('../build/RevenueSharingPool_Test');
-const IPancakeRouter = require('../build/IPancakeRouter02.json');
-const IWBNB = require('../build/IWBNB.json');
+const RevenueSharingPool = require('../build/MockRevenueSharingPool.json');
 const ERC20 = require('../build/ERC20Token.json')
 
 use(waffleChai);
@@ -15,26 +13,14 @@ describe('Revenue Sharing Pool', () => {
     const provider = new MockProvider();
     const [owner, account2, account3] = provider.getWallets();
     const lucky = await deployContract(owner, ERC20, [utils.parseEther('1000000')]);
-    const busd = await deployContract(owner, ERC20, [utils.parseEther('1000000')]);
     const luckyBusd = await deployContract(owner, ERC20, [utils.parseEther('1000000')]);
-    const router = await deployMockContract(owner, IPancakeRouter.abi);
-    const wbnb = await deployMockContract(owner, IWBNB.abi);
     const contractFactory = new ContractFactory(RevenueSharingPool.abi, RevenueSharingPool.bytecode, owner);
     const revPool = await contractFactory.deploy(
-      lucky.address, 
       luckyBusd.address, 
       owner.address, 
-      router.address,
-      busd.address,
-      wbnb.address
     );
     return {owner, account2, account3, revPool, lucky, luckyBusd, provider};
   }
-
-  // const preFundLPToken = async (address) => {
-  //   const { luckyBusd } = await setup();
-  //   await luckyBusd.transfer(address, 1000);
-  // }
 
   const getDepositDate = async (numberOfdays) => {
     if (numberOfdays == 0) return 0;
@@ -84,11 +70,6 @@ describe('Revenue Sharing Pool', () => {
 
     await expect(() => revPool.depositToken(100))
     .to.changeTokenBalances(luckyBusd, [owner, revPool], [-100, 100]);
-
-    // const timestamp = await getTimestamp();
-    // await expect(revPool.depositToken(100))
-    // .to.emit(revPool, 'DepositStake')
-    // .withArgs(owner.address, 100, timestamp);
   });
 
   it('If stake 0 LP will be reverted', async () => {
@@ -112,10 +93,10 @@ describe('Revenue Sharing Pool', () => {
     .to.changeTokenBalances(luckyBusd, [owner, revPool], [100, -100]);
 
     await revPool.depositToken(100);
-    //const timestamp = await getTimestamp();
-    // await expect(revPool.withdrawToken())
-    // .to.emit(revPool, 'WithdrawStake')
-    // .withArgs(owner.address, 100, timestamp);
+
+    await expect(revPool.withdrawToken())
+    .to.emit(revPool, 'WithdrawStake')
+    .withArgs(owner.address, 100);
   });
 
   it('User stake amount is updated', async () => {
@@ -252,26 +233,24 @@ describe('Revenue Sharing Pool', () => {
   });
 
   it('Can deposit LUCKY revenue to contract', async () => {
-    const { revPool, lucky, owner } = await setup();
+    const { revPool, owner } = await setup();
     const roundId = await revPool.getCurrentRoundId();
     const winLoss = 100;
     const TPV = 50000;
     const percentOfRevshare = 9;
-    await lucky.approve(revPool.address, constants.MaxUint256);
-    expect('approve').to.be.calledOnContractWith(lucky, [revPool.address, constants.MaxUint256]);  
     
     await revPool.addWhitelist(owner.address)
 
-    await revPool.testDepositRevenue(100, winLoss, percentOfRevshare, TPV);
-    
+    await revPool.depositRevenue(100);
+
     // [Owner] update pool
-    await revPool.updatePool();
+    await revPool.updatePoolInfo(winLoss, TPV, "LUCKY", 100, percentOfRevshare, roundId);
     
     expect(await revPool.totalLuckyRevenue(roundId)).to.equal(100);
   });
 
   it('Can get history data of Revenue Sharing Pool on specific round', async () => {
-    const { revPool, lucky, luckyBusd, owner } = await setup();
+    const { revPool, luckyBusd, owner } = await setup();
     
     // Initial variables
     const roundId = await revPool.getCurrentRoundId();
@@ -280,6 +259,7 @@ describe('Revenue Sharing Pool', () => {
     const revenueAmount = 100
     const depositAmount = 500  
     const percentOfRevshare = 9;
+    const symbol = "LUCKY"
 
     // Approve LUCKY-BUSD LP token to contract
     await luckyBusd.approve(revPool.address, constants.MaxUint256);
@@ -288,26 +268,27 @@ describe('Revenue Sharing Pool', () => {
     // Deposit LUCKY-BUSD LP token
     await revPool.depositToken(depositAmount);
 
-    // Approve LUCKY to contract
-    await lucky.approve(revPool.address, constants.MaxUint256);
-    expect('approve').to.be.calledOnContractWith(lucky, [revPool.address, constants.MaxUint256]);
-
     // Add whitelised address
     await revPool.addWhitelist(owner.address)
 
     // Deposit revenue
-    await revPool.testDepositRevenue(revenueAmount, winLoss, percentOfRevshare, TPV);
-    
+    await revPool.depositRevenue(revenueAmount);
+
+    // [Owner] update pool
+    await revPool.updatePoolInfo(winLoss, TPV, "LUCKY", 100, percentOfRevshare, roundId);
+
     // Call poolInfo data
     const poolInfo = await revPool.poolInfo(roundId)
     expect(poolInfo[0]).to.equal(winLoss)
     expect(poolInfo[1]).to.equal(TPV)
-    expect(poolInfo[2]).to.equal(revenueAmount)
-    expect(poolInfo[3]).to.equal(depositAmount)
+    expect(poolInfo[2]).to.equal(symbol)
+    expect(poolInfo[3]).to.equal(await revPool.getLuckyBusdBalance())
+    expect(poolInfo[4]).to.equal(percentOfRevshare)
+    expect(poolInfo[6]).to.equal(revenueAmount)
   });
 
   it('Can get pending LUCKY reward of specific round', async () => {
-    const { revPool, lucky, luckyBusd, owner } = await setup();
+    const { revPool, luckyBusd, owner } = await setup();
     
     // Initial variables
     const roundId = await revPool.getCurrentRoundId();
@@ -316,6 +297,8 @@ describe('Revenue Sharing Pool', () => {
     const revenueAmount = 100
     const depositAmount = 100
     const percentOfRevshare = 9
+    const symbol = "LUCKY"
+
     // Approve LUCKY-BUSD LP token to contract
     await luckyBusd.approve(revPool.address, constants.MaxUint256);
     expect('approve').to.be.calledOnContractWith(luckyBusd, [revPool.address, constants.MaxUint256]);
@@ -323,18 +306,14 @@ describe('Revenue Sharing Pool', () => {
     // Deposit LUCKY-BUSD LP token
     await revPool.depositToken(depositAmount);
 
-    // Approve LUCKY to contract
-    await lucky.approve(revPool.address, constants.MaxUint256);
-    expect('approve').to.be.calledOnContractWith(lucky, [revPool.address, constants.MaxUint256]);  
-
     // Add whitelised address
     await revPool.addWhitelist(owner.address)
 
     // Deposit revenue
-    await revPool.testDepositRevenue(revenueAmount, winLoss, percentOfRevshare, TPV);
+    await revPool.depositRevenue(revenueAmount);
 
     // [Owner] update pool
-    await revPool.updatePool();
+    await revPool.updatePoolInfo(winLoss, TPV, symbol, revenueAmount, percentOfRevshare, roundId);
     
     // Call function getLuckyRewardPerRound
     const luckyReward = await revPool.getLuckyRewardPerRound(roundId)
@@ -342,7 +321,7 @@ describe('Revenue Sharing Pool', () => {
   });
 
   it('Can claim pending reward of previous round', async () => {
-    const { revPool, lucky, luckyBusd, owner, account2 } = await setup();
+    const { revPool, luckyBusd, owner, account2 } = await setup();
     
     // Initial variables
     const winLoss = 100;
@@ -350,6 +329,8 @@ describe('Revenue Sharing Pool', () => {
     const revenueAmount = 100
     const depositAmount = 100
     const percentOfRevshare = 9
+    const symbol = "LUCKY"
+
     // Approve LUCKY-BUSD LP token to contract
     await luckyBusd.approve(revPool.address, constants.MaxUint256);
     expect('approve').to.be.calledOnContractWith(luckyBusd, [revPool.address, constants.MaxUint256]);
@@ -368,29 +349,29 @@ describe('Revenue Sharing Pool', () => {
     // Deposit LUCKY-BUSD LP token
     await revPool.connect(account2).depositToken(depositAmount);
 
-    // Approve LUCKY to contract
-    await lucky.approve(revPool.address, constants.MaxUint256);
-    expect('approve').to.be.calledOnContractWith(lucky, [revPool.address, constants.MaxUint256]);  
-
     // Add whitelised address
     await revPool.addWhitelist(owner.address);
 
     // Deposit revenue
-    await revPool.testDepositRevenue(revenueAmount, winLoss, percentOfRevshare, TPV);
+    await revPool.depositRevenue(revenueAmount);
+
+    // Get round ID
+    const roundId = await revPool.getCurrentRoundId();
 
     // [Owner] update pool
-    await revPool.updatePool();
+    await revPool.updatePoolInfo(winLoss, TPV, symbol, revenueAmount, percentOfRevshare, roundId);
     
     // Get pending LUCKY reward
     const pendingReward = await revPool.getPendingReward();
 
     // Call claimReward function to claim pending LUCKY reward
-    await expect(() => revPool.claimReward())
-    .to.changeTokenBalances(lucky, [revPool, owner], [-pendingReward.toNumber(), pendingReward.toNumber()])
+    await expect(revPool.claimReward())
+      .to.emit(revPool, 'ClaimReward')
+      .withArgs(owner.address, pendingReward);
   });
 
   it('Can get pending LUCKY reward of specific round', async () => {
-    const { revPool, lucky, luckyBusd, owner } = await setup();
+    const { revPool, luckyBusd, owner } = await setup();
     
     // Initial variables
     const roundId = await revPool.getCurrentRoundId();
@@ -399,6 +380,8 @@ describe('Revenue Sharing Pool', () => {
     const revenueAmount = 100
     const depositAmount = 100
     const percentOfRevshare = 9
+    const symbol = "LUCKY"
+    
     // Approve LUCKY-BUSD LP token to contract
     await luckyBusd.approve(revPool.address, constants.MaxUint256);
     expect('approve').to.be.calledOnContractWith(luckyBusd, [revPool.address, constants.MaxUint256]);
@@ -406,18 +389,14 @@ describe('Revenue Sharing Pool', () => {
     // Deposit LUCKY-BUSD LP token
     await revPool.depositToken(depositAmount);
 
-    // Approve LUCKY to contract
-    await lucky.approve(revPool.address, constants.MaxUint256);
-    expect('approve').to.be.calledOnContractWith(lucky, [revPool.address, constants.MaxUint256]);  
-
     // Add whitelised address
     await revPool.addWhitelist(owner.address)
 
     // Deposit revenue
-    await revPool.testDepositRevenue(revenueAmount, winLoss, percentOfRevshare, TPV);
+    await revPool.depositRevenue(revenueAmount);
 
     // [Owner] update pool
-    await revPool.updatePool();
+    await revPool.updatePoolInfo(winLoss, TPV, symbol, revenueAmount, percentOfRevshare, roundId);
     
     // Call function getLuckyRewardPerRound
     const luckyReward = await revPool.getLuckyRewardPerRound(roundId)
@@ -425,7 +404,7 @@ describe('Revenue Sharing Pool', () => {
   });
 
   it('Can claim pending reward of previous round', async () => {
-    const { revPool, lucky, luckyBusd, owner, account2 } = await setup();
+    const { revPool, luckyBusd, owner, account2 } = await setup();
   
     // Initial variables
     const winLoss = 100;
@@ -433,6 +412,8 @@ describe('Revenue Sharing Pool', () => {
     const revenueAmount = 100
     const depositAmount = 100
     const percentOfRevshare = 5;
+    const symbol = "LUCKY"
+
     // Approve LUCKY-BUSD LP token to contract
     await luckyBusd.approve(revPool.address, constants.MaxUint256);
     expect('approve').to.be.calledOnContractWith(luckyBusd, [revPool.address, constants.MaxUint256]);
@@ -451,29 +432,29 @@ describe('Revenue Sharing Pool', () => {
     // Deposit LUCKY-BUSD LP token
     await revPool.connect(account2).depositToken(depositAmount);
 
-    // Approve LUCKY to contract
-    await lucky.approve(revPool.address, constants.MaxUint256);
-    expect('approve').to.be.calledOnContractWith(lucky, [revPool.address, constants.MaxUint256]);  
-
     // Add whitelised address
     await revPool.addWhitelist(owner.address);
 
     // Deposit revenue
-    await revPool.testDepositRevenue(revenueAmount, winLoss, percentOfRevshare, TPV);
+    await revPool.depositRevenue(revenueAmount);
+
+    // Get round ID
+    const roundId = await revPool.getCurrentRoundId();
 
     // [Owner] update pool
-    await revPool.updatePool();
+    await revPool.updatePoolInfo(winLoss, TPV, symbol, revenueAmount, percentOfRevshare, roundId);
     
     // Get pending LUCKY reward
     const pendingReward = await revPool.getPendingReward();
 
     // Call claimReward function to claim pending LUCKY reward
-    await expect(() => revPool.claimReward())
-    .to.changeTokenBalances(lucky, [revPool, owner], [-pendingReward.toNumber(), pendingReward.toNumber()])
+    await expect(revPool.claimReward())
+      .to.emit(revPool, 'ClaimReward')
+      .withArgs(owner.address, pendingReward);
   });
 
   it('All case (Deposit LP -> Withdraw -> Deposit Revenue -> Claim reward -> Get Pool history data)', async () => {
-    const { revPool, lucky, luckyBusd, owner, account2, account3 } = await setup();
+    const { revPool, luckyBusd, owner, account2, account3 } = await setup();
   
     //---------------------------------------Round 0---------------------------------------
     // Initial variables of round 0
@@ -484,7 +465,8 @@ describe('Revenue Sharing Pool', () => {
       percentOfRevshare: 5,
       amount1: utils.parseEther('1'), // 25% shares
       amount2: utils.parseEther('1'), // 25% shares
-      amount3: utils.parseEther('2') // 50% shares
+      amount3: utils.parseEther('2'), // 50% shares
+      symbol: "LUCKY"
     };
     
     // [Account1] approve LUCKY-BUSD LP token to contract
@@ -514,46 +496,51 @@ describe('Revenue Sharing Pool', () => {
     // [Account3] deposit LUCKY-BUSD LP token
     await revPool.connect(account3).depositToken(data.amount3);
 
-    // [Owner] approve LUCKY to contract
-    await lucky.approve(revPool.address, constants.MaxUint256);
-    expect('approve').to.be.calledOnContractWith(lucky, [revPool.address, constants.MaxUint256]);  
-
     // [Owner] add whitelised address
     await revPool.addWhitelist(owner.address);
 
     // [Owner] deposit revenue
-    await revPool.testDepositRevenue(data.revenueAmount, data.winLoss, data.percentOfRevshare, data.TPV);
+    await revPool.depositRevenue(data.revenueAmount);
+
+    // Get round ID
+    const roundId0 = await revPool.getCurrentRoundId();
 
     // [Owner] update pool
-    await revPool.updatePool();
+    await revPool.updatePoolInfo(data.winLoss, data.TPV, data.symbol, data.revenueAmount, data.percentOfRevshare, roundId0);
   
     // [Account1] Get pending LUCKY reward
     const pendingReward01 = await revPool.getPendingReward();
 
     // [Account1] Claim LUCKY reward
-    await expect(() => revPool.claimReward())
-    .to.changeTokenBalance(lucky, owner, pendingReward01.toString());
+    await expect(revPool.claimReward())
+      .to.emit(revPool, 'ClaimReward')
+      .withArgs(owner.address, pendingReward01);
   
     // [Account2] Get pending LUCKY reward
     const pendingReward02 = await revPool.connect(account2).getPendingReward();
 
     // [Account2] Claim LUCKY reward
-    await expect(() => revPool.connect(account2).claimReward())
-    .to.changeTokenBalance(lucky, account2, pendingReward02.toString());
+    await expect(revPool.connect(account2).claimReward())
+      .to.emit(revPool, 'ClaimReward')
+      .withArgs(account2.address, pendingReward02);
   
     // [Account3] Get pending LUCKY reward
     const pendingReward03 = await revPool.connect(account3).getPendingReward();
 
     // [Account3] Claim LUCKY reward
-    await expect(() => revPool.connect(account3).claimReward())
-    .to.changeTokenBalance(lucky, account3, pendingReward03.toString());
+    await expect(revPool.connect(account3).claimReward())
+    .to.emit(revPool, 'ClaimReward')
+    .withArgs(account3.address, pendingReward03);
 
     //---------------------------------------Pool History of Round 0---------------------------------------
-    const poolInfo = await revPool.poolInfo(0)
+
+    const poolInfo = await revPool.poolInfo(roundId0)
     expect(poolInfo[0]).to.equal(data.winLoss)
     expect(poolInfo[1]).to.equal(data.TPV)
-    expect(poolInfo[2]).to.equal(data.revenueAmount)
+    expect(poolInfo[2]).to.equal(data.symbol)
     expect(poolInfo[3]).to.equal(await revPool.getLuckyBusdBalance())
+    expect(poolInfo[4]).to.equal(data.percentOfRevshare)
+    expect(poolInfo[6]).to.equal(data.revenueAmount)
 
   //---------------------------------------Round 1---------------------------------------
     // Initial variables of round 0
@@ -564,6 +551,7 @@ describe('Revenue Sharing Pool', () => {
       percentOfRevshare: 5,
       amount1: utils.parseEther('1'),
       amount2: utils.parseEther('1'),
+      symbol: "LUCKY"
     };
     
     // [Account1] deposit LUCKY-BUSD LP token
@@ -579,38 +567,38 @@ describe('Revenue Sharing Pool', () => {
     await revPool.connect(account3).withdrawToken();
 
     // [Owner] deposit revenue
-    await revPool.testDepositRevenue(data2.revenueAmount, data2.winLoss,data2.percentOfRevshare, data2.TPV);
+    await revPool.depositRevenue(data2.revenueAmount);
+
+    // Get round ID
+    const roundId1 = await revPool.getCurrentRoundId();
 
     // [Owner] update pool
-    await revPool.updatePool();
+    await revPool.updatePoolInfo(data2.winLoss, data2.TPV, data2.symbol, data2.revenueAmount, data2.percentOfRevshare, roundId1);
   
     // [Account1] Get pending LUCKY reward
     const pendingReward11 = await revPool.getPendingReward();
 
     // [Account1] Claim LUCKY reward
-    await expect(() => revPool.claimReward())
-    .to.changeTokenBalance(lucky, owner, pendingReward11.toString());
+    await expect(revPool.claimReward())
+      .to.emit(revPool, 'ClaimReward')
+      .withArgs(owner.address, pendingReward11);
 
     // [Account2] Get pending LUCKY reward
     const pendingReward12 = await revPool.connect(account2).getPendingReward();
 
     // [Account2] Claim LUCKY reward
-    await expect(() => revPool.connect(account2).claimReward())
-    .to.changeTokenBalance(lucky, account2, pendingReward12.toString());
-  
-    // [Account3] Get pending LUCKY reward
-    // const pendingReward13 = await revPool.connect(account3).getPendingReward();
-
-    // // [Account3] Claim LUCKY reward
-    // await expect(() => revPool.connect(account3).claimReward())
-    // .to.changeTokenBalance(lucky, account3, pendingReward13.toString());
+    await expect(revPool.connect(account2).claimReward())
+      .to.emit(revPool, 'ClaimReward')
+      .withArgs(account2.address, pendingReward12);
 
     //---------------------------------------Pool History of Round 1---------------------------------------
-    const poolInfo2 = await revPool.poolInfo(1)
+    const poolInfo2 = await revPool.poolInfo(roundId1)
     expect(poolInfo2[0]).to.equal(data2.winLoss)
     expect(poolInfo2[1]).to.equal(data2.TPV)
-    expect(poolInfo2[2]).to.equal(data2.revenueAmount)
+    expect(poolInfo2[2]).to.equal(data2.symbol)
     expect(poolInfo2[3]).to.equal(await revPool.getLuckyBusdBalance())
+    expect(poolInfo2[4]).to.equal(data2.percentOfRevshare)
+    expect(poolInfo2[6]).to.equal(data2.revenueAmount)
 
   });
 });
