@@ -227,7 +227,7 @@ contract RevenueSharingPool is Ownable {
     
     function updatePendingReward() internal {
         UserInfo storage user = userInfo[msg.sender];
-        uint256 luckyReward = calculateTotalLuckyReward();
+        uint256 luckyReward = calculateTotalLuckyReward(msg.sender);
         uint256 luckyRewardDept = user.rewardDept;
         user.pendingReward = (luckyReward - luckyRewardDept);
     }
@@ -248,11 +248,11 @@ contract RevenueSharingPool is Ownable {
         return luckyReward;
     }
     
-    function calculateTotalLuckyReward() internal view returns (uint256) {
+    function calculateTotalLuckyReward(address _address) internal view returns (uint256) {
         uint256 totalLuckyReward = 0;
         uint256 roundId = getCurrentRoundId();
         for (uint256 i = 0; i < roundId; i++) { 
-            totalLuckyReward += calculateLuckyReward(msg.sender, i);
+            totalLuckyReward += calculateLuckyReward(_address, i);
         }
         return totalLuckyReward;
     }
@@ -272,8 +272,8 @@ contract RevenueSharingPool is Ownable {
     }
     
     // return user stake amount of specific round and date
-    function getStakeAmount(uint256 roundId, uint256 day) external view returns (uint256) {
-        return stakeAmount[roundId][day][msg.sender];
+    function getStakeAmount(uint256 roundId, uint256 day, address _address) external view returns (uint256) {
+        return stakeAmount[roundId][day][_address];
     }
      
     // Get past time (in seconds) since start round
@@ -302,18 +302,18 @@ contract RevenueSharingPool is Ownable {
     }
      
     // return unclaimed LUCKY reward of msg.sender
-    function getPendingReward() external view returns (uint256) {
-        UserInfo storage user = userInfo[msg.sender];
+    function getPendingReward(address _address) external view returns (uint256) {
+        UserInfo storage user = userInfo[_address];
         if (user.amount == 0) {
             return user.pendingReward;
         }
-        uint256 luckyReward = calculateTotalLuckyReward();
+        uint256 luckyReward = calculateTotalLuckyReward(_address);
         uint256 luckyRewardDept = user.rewardDept;
         return (luckyReward - luckyRewardDept);
     }
     
-    function getLuckyRewardPerRound(uint256 roundId) external view returns (uint256){
-	    uint256 luckyReward = calculateLuckyReward(msg.sender, roundId);
+    function getLuckyRewardPerRound(uint256 roundId, address _address) external view returns (uint256){
+	    uint256 luckyReward = calculateLuckyReward(_address, roundId);
 	    return luckyReward;
     }
     
