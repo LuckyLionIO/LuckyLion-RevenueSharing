@@ -40,7 +40,7 @@ contract RevenueSharingPool is Ownable {
     struct PoolInfo {
 	    uint256 winLoss;
 	    uint256 TPV;
-	    string symbol; // must be changes (waiting for P'Book to confirm with customer)
+	    string symbol;
 	    uint256 TVL;
 	    uint256 percentOfRevshare;
 	    uint256 participants;
@@ -181,8 +181,8 @@ contract RevenueSharingPool is Ownable {
 	    PoolInfo storage _poolInfo = poolInfo[roundID];
 	    _poolInfo.winLoss = winLoss;
 	    _poolInfo.TPV = TPV;
-        _poolInfo.symbol = symbol; // must be changes (waiting for P'Book to confirm with customer)
-        _poolInfo.percentOfRevshare = percentOfRevshare;
+            _poolInfo.symbol = symbol; 
+            _poolInfo.percentOfRevshare = percentOfRevshare;
 	    _poolInfo.TVL = totalValueLock;
 	    _poolInfo.participants = stakeholders.length;
 	    _poolInfo.totalLuckyRevenue = revenueAmount;
