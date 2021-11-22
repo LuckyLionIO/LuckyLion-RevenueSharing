@@ -17,7 +17,8 @@ contract RevenueSharingPool is Ownable {
     
     // contract global variables
     uint256 public START_ROUND_DATE;
-    uint256 public MAX_DATE = 7;
+    mapping(uint256 => uint256) public MAX_DATE;
+    uint256 public numberOfDate;
     
     // staking related variables
     mapping(uint256 => mapping(uint256 => uint256)) public totalStake;
@@ -69,6 +70,8 @@ contract RevenueSharingPool is Ownable {
         luckyBusd = IERC20(_luckyBusd);
         START_ROUND_DATE = block.timestamp;        
         transferOwnership(owner_);
+        numberOfDate = 7;
+        MAX_DATE[0] = numberOfDate;
     }
     
     //-------------------------Staking Functions -------------------------//
@@ -163,7 +166,9 @@ contract RevenueSharingPool is Ownable {
     
     // Update max number of day in a round (default 7 days)
     function updateMaxDate(uint256 newMaxDate) external onlyOwner {
-        MAX_DATE = newMaxDate;
+        uint256 currentRoundId = getCurrentRoundId();
+        numberOfDate = newMaxDate;
+        MAX_DATE[currentRoundId] = numberOfDate;
         emit UpdateMaxDate(newMaxDate);
     }
     
@@ -190,7 +195,7 @@ contract RevenueSharingPool is Ownable {
     }
 
     function removeStake(uint256 roundId) internal {
-        for (uint256 i = 1; i <= MAX_DATE; i++) {
+        for (uint256 i = 1; i <= MAX_DATE[roundId]; i++) {
             uint256 amount = stakeAmount[roundId][i][msg.sender];
             stakeAmount[roundId][i][msg.sender] -= amount;
             totalStake[roundId][i] -= amount;
@@ -198,7 +203,7 @@ contract RevenueSharingPool is Ownable {
     }
     
     function updateStake(uint256 roundId, uint256 depositDate, uint256 amount) internal {
-        for(uint256 i = depositDate; i <= MAX_DATE; i++) {
+        for(uint256 i = depositDate; i <= MAX_DATE[roundId]; i++) {
             stakeAmount[roundId][i][msg.sender] += amount;
             totalStake[roundId][i] += amount;
         }
@@ -212,7 +217,7 @@ contract RevenueSharingPool is Ownable {
         uint256 amount = user.amount;
         // If last update stake amount is on round 2 so we need to update stake amount from round 3 - 5
         for(uint256 i = (lastUpdateRoundId + 1); i <= currentRoundId; i++) {
-            for(uint256 j = 1; j <= MAX_DATE; j++) {
+            for(uint256 j = 1; j <= MAX_DATE[currentRoundId]; j++) {
                 stakeAmount[i][j][msg.sender] = amount;
             }
         }
@@ -221,7 +226,7 @@ contract RevenueSharingPool is Ownable {
     
     function updateTotalStake(uint256 roundId) internal {
         uint256 _totalStake = luckyBusd.balanceOf(address(this));
-        for(uint256 i = 1; i <= MAX_DATE; i++) {
+        for(uint256 i = 1; i <= MAX_DATE[roundId]; i++) {
             totalStake[roundId][i] = _totalStake;
         }
     }
@@ -239,7 +244,7 @@ contract RevenueSharingPool is Ownable {
         if (totalLuckyRevenuePerDay == 0) {
             return 0;
         }
-        for (uint256 i = 1; i <= MAX_DATE; i++) {
+        for (uint256 i = 1; i <= MAX_DATE[roundId]; i++) {
             uint256 amount = stakeAmount[roundId][i][account];
             if (amount == 0) continue;
             uint256 _totalStake = totalStake[roundId][i];
@@ -284,7 +289,8 @@ contract RevenueSharingPool is Ownable {
     
     // check deposit date of msg.sender (date range: 1 - MAX_DATE)
     function getDepositDate() internal view returns (uint256) {
-        for (uint256 i = 1; i <= MAX_DATE; i++) { 
+        uint256 roundId = getCurrentRoundId();
+        for (uint256 i = 1; i <= MAX_DATE[roundId]; i++) { 
             if (block.timestamp >= START_ROUND_DATE && block.timestamp < START_ROUND_DATE + (i * 1 days)) { 
                 return i;
             }
@@ -294,7 +300,7 @@ contract RevenueSharingPool is Ownable {
     
     // return total LUCKY reward per day of specific round
     function getTotalLuckyRewardPerDay(uint256 roundId) public view returns (uint256) {
-        return (totalLuckyRevenue[roundId] / MAX_DATE);
+        return (totalLuckyRevenue[roundId] / MAX_DATE[roundId]);
     }
     
     // return total LUCKY-BUSD LP balance in this contract
@@ -339,6 +345,7 @@ contract RevenueSharingPool is Ownable {
         START_ROUND_DATE = block.timestamp;
         updateRoundId();
         uint256 currentRoundId = getCurrentRoundId();
+        MAX_DATE[currentRoundId] = numberOfDate;
         updateTotalStake(currentRoundId); // update new round total stake
         emit DistributeLuckyRevenue(msg.sender, address(this), amount);
     }
