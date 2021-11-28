@@ -289,13 +289,16 @@ contract RevenueSharingPool is Ownable {
     
     // check deposit date of msg.sender (date range: 1 - MAX_DATE)
     function getDepositDate() internal view returns (uint256) {
+        require(block.timestamp >= START_ROUND_DATE, "Can not stake before round start!");
         uint256 roundId = getCurrentRoundId();
+
+        if (block.timestamp > START_ROUND_DATE + (MAX_DATE[roundId] * 1 days)) return MAX_DATE[roundId];
+        
         for (uint256 i = 1; i <= MAX_DATE[roundId]; i++) { 
-            if (block.timestamp >= START_ROUND_DATE && block.timestamp < START_ROUND_DATE + (i * 1 days)) { 
+            if (block.timestamp <= START_ROUND_DATE + (i * 1 days)) { 
                 return i;
             }
         }
-        return 0;
     }
     
     // return total LUCKY reward per day of specific round
